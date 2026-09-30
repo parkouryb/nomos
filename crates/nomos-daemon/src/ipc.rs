@@ -85,10 +85,14 @@ pub fn default_socket_path() -> PathBuf {
     if let Ok(env_sock) = std::env::var("NOMOS_SOCKET") {
         return PathBuf::from(env_sock);
     }
-    if Path::new("/run").exists() && std::fs::metadata("/run").map(|m| !m.permissions().readonly()).unwrap_or(false) {
-        PathBuf::from("/run/nomos/arbiter.sock")
-    } else {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(home).join(".nomos/arbiter.sock")
+    let run_nomos = Path::new("/run/nomos");
+    if run_nomos.exists() {
+        return run_nomos.join("arbiter.sock");
     }
+    #[cfg(target_os = "linux")]
+    if nix::unistd::geteuid().is_root() {
+        return PathBuf::from("/run/nomos/arbiter.sock");
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".nomos/arbiter.sock")
 }

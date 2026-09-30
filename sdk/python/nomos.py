@@ -19,9 +19,10 @@ def default_socket_path() -> str:
     env_sock = os.environ.get("NOMOS_SOCKET")
     if env_sock:
         return env_sock
-    run_sock = "/run/nomos/arbiter.sock"
-    if os.path.exists("/run") and os.access("/run", os.W_OK):
-        return run_sock
+    if os.path.exists("/run/nomos/arbiter.sock"):
+        return "/run/nomos/arbiter.sock"
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return "/run/nomos/arbiter.sock"
     home = os.environ.get("HOME", ".")
     return os.path.join(home, ".nomos", "arbiter.sock")
 
