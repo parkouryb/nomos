@@ -22,6 +22,8 @@ pub enum Commands {
     Run(RunCliArgs),
     /// Query resource accounting and audit logs
     Accounting(AccountingArgs),
+    /// Recompile, update Nomos binary, configuration, and restart background daemon
+    Update,
 }
 
 #[derive(Args, Debug)]

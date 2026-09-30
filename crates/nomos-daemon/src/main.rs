@@ -210,6 +210,32 @@ async fn main() -> Result<(), anyhow::Error> {
             }
             println!("===============================================================================");
         }
+
+        Commands::Update => {
+            println!("===============================================================================");
+            println!(" NOMOS SELF-UPDATE");
+            println!("===============================================================================");
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            let candidates = vec![
+                std::path::PathBuf::from("install.sh"),
+                std::path::PathBuf::from(&home).join("nomos/install.sh"),
+                std::path::PathBuf::from(&home).join("WorkingSpace/ComposeLab/nomos/install.sh"),
+            ];
+
+            let installer = candidates.into_iter().find(|p| p.exists());
+            if let Some(script) = installer {
+                println!("Executing update script: {:?}", script);
+                let status = std::process::Command::new("bash")
+                    .arg(&script)
+                    .status()?;
+                if !status.success() {
+                    std::process::exit(status.code().unwrap_or(1));
+                }
+            } else {
+                eprintln!("[ERROR] Could not locate 'install.sh'. Please run from the Nomos repository directory.");
+                std::process::exit(1);
+            }
+        }
     }
 
     Ok(())
