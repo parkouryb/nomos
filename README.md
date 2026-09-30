@@ -18,9 +18,23 @@ A deterministic, zero-GC, ultra-low-overhead resource arbiter written in 100% Ru
 
 ---
 
+## One-Command Installation & Update
+
+Install or update Nomos, its background service, system PATH, configuration, and Python SDK on any host (macOS or Linux) with a single command:
+
+```bash
+# Install or Update via installer script
+./install.sh
+
+# Or once installed, self-update at any time directly via CLI:
+nomos update
+```
+
+---
+
 ## Quickstart
 
-### 1. Build
+### 1. Build from Source
 ```bash
 cargo build --release
 ```
