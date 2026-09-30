@@ -1,0 +1,29 @@
+[Unit]
+Description=Nomos Single-Host Delicate Resource Arbiter
+Documentation=https://github.com/composing/nomos
+After=network.target sysinit.target
+
+[Service]
+Type=simple
+User=hieuha-worker
+Group=hieuha-worker
+WorkingDirectory=/home/hieuha-worker/nomos
+ExecStart=/usr/local/bin/nomos daemon --config /home/hieuha-worker/nomos/nomos.toml --port 9100 --socket /run/nomos/arbiter.sock
+Restart=always
+RestartSec=3
+
+# Cgroups v2 Delegation for unprivileged subtree resource control
+Delegate=yes
+
+# Runtime directory for Unix Domain Socket (/run/nomos)
+RuntimeDirectory=nomos
+RuntimeDirectoryMode=0755
+
+# Security hardening
+LimitNOFILE=65536
+LimitNPROC=32768
+TasksMax=infinity
+OOMScoreAdjust=-500
+
+[Install]
+WantedBy=multi-user.target

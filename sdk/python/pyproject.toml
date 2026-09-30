@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nomos"
+version = "0.1.0"
+description = "Python SDK for Nomos Single-Host Resource Arbiter"
+authors = [{ name = "Nomos Team" }]
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = []
+
+[tool.setuptools]
+py-modules = ["nomos"]

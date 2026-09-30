@@ -1,0 +1,42 @@
+# NOMOS RESOURCE ARBITER CONFIGURATION
+# Location: /etc/nomos/config.toml or ./nomos.toml
+
+[system]
+# Unix Domain Socket path for local worker IPC
+socket_path = "/run/nomos/arbiter.sock"
+
+# Embedded Web Dashboard port (live telemetry & Gantt visualizer)
+http_port = 9100
+
+[budget]
+# Allocation mode: "percentage" or "absolute"
+mode = "percentage"
+
+# Proportion of host capacity managed by Nomos
+# Example on Intel Core Ultra 14-core / 64GB RAM NUC:
+# cpu_limit = "50%" -> Max 7.0 vCPUs allocated across all workers
+# memory_limit = "50%" -> Max 32.0 GiB RAM allocated across all workers
+cpu_limit = "50%"
+memory_limit = "50%"
+
+# Host Safe Reserve: Nomos will refuse to allocate if free RAM drops near this floor
+host_reserve_memory = "8GB"
+
+# Maximum disk quota for temporary scratch allocations
+storage_limit = "200GB"
+
+# Maximum concurrent active leases
+max_active_leases = 100
+
+[storage]
+scratch_driver = "tmpfs"
+scratch_default_quota = "2GB"
+persistent_base_path = "/var/lib/nomos/tenants"
+default_disk_quota = "20GB"
+
+[watchdog]
+enabled = true
+poll_interval_ms = 500
+heartbeat_timeout_seconds = 15
+thermal_warning_celsius = 80.0
+thermal_critical_celsius = 88.0
