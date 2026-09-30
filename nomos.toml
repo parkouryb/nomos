@@ -28,6 +28,9 @@ storage_limit = "200GB"
 # Maximum concurrent active leases
 max_active_leases = 100
 
+# Audit ledger and resource accounting retention period in days (default: 30)
+audit_retention_days = 30
+
 [storage]
 scratch_driver = "tmpfs"
 scratch_default_quota = "2GB"

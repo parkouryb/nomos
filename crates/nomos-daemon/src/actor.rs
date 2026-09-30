@@ -42,6 +42,7 @@ impl ArbiterActor {
     pub fn spawn(
         pool: NomosPool,
         audit_path: Option<String>,
+        retention_days: u32,
     ) -> (ArbiterHandle, tokio::task::JoinHandle<()>) {
         let (tx, rx) = mpsc::channel(256);
         let scheduler = Scheduler::new(pool);
@@ -55,7 +56,7 @@ impl ArbiterActor {
             info!("Boot reconciliation: Cleaned {} orphan cgroup slices", orphans_cleaned);
         }
 
-        let ledger = AuditLedger::new(audit_path);
+        let ledger = AuditLedger::with_retention(audit_path, retention_days);
 
         let actor = Self {
             scheduler,
@@ -187,10 +188,10 @@ impl ArbiterActor {
             ArbiterRequest::GetStatus => {
                 ArbiterResponse::Status(self.scheduler.snapshot())
             }
-            ArbiterRequest::GetAccounting { limit } => {
+            ArbiterRequest::GetAccounting { limit, days } => {
                 ArbiterResponse::Accounting {
-                    summary: self.ledger.summary(),
-                    recent: self.ledger.recent_records(limit).to_vec(),
+                    summary: self.ledger.summary_window(days),
+                    recent: self.ledger.recent_records_window(limit, days).to_vec(),
                 }
             }
             ArbiterRequest::SetBudget(cfg) => {

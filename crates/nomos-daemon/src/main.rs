@@ -69,7 +69,7 @@ async fn main() -> Result<(), anyhow::Error> {
             );
 
             let audit_path = dirs_next().join("audit.jsonl").to_str().map(|s| s.to_string());
-            let (handle, _actor_join) = actor::ArbiterActor::spawn(pool, audit_path);
+            let (handle, _actor_join) = actor::ArbiterActor::spawn(pool, audit_path, config.audit_retention_days);
 
             // Start IPC Unix Socket server
             let sock_path = args.socket.unwrap_or_else(default_socket_path);
@@ -194,9 +194,9 @@ async fn main() -> Result<(), anyhow::Error> {
             let mut client = NomosClient::connect(&sock).await
                 .map_err(|e| anyhow::anyhow!("Cannot connect to Nomos at {:?}: {}. Is 'nomos daemon' running?", sock, e))?;
 
-            let (summary, recent) = client.get_accounting(args.limit).await?;
+            let (summary, recent) = client.get_accounting_window(args.limit, Some(args.days)).await?;
             println!("===============================================================================");
-            println!(" NOMOS RESOURCE ACCOUNTING LEDGER");
+            println!(" NOMOS RESOURCE ACCOUNTING LEDGER (Last {} Days)", args.days);
             println!("===============================================================================");
             println!(" Total Jobs Tracked:       {}", summary.total_records);
             println!(" Cumulative CPU Core-Hours: {:.4} hrs", summary.total_cpu_hours);

@@ -110,8 +110,17 @@ impl NomosClient {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn get_accounting(&mut self, limit: usize) -> Result<(AccountingSummary, Vec<AuditRecord>), anyhow::Error> {
-        match self.call(ArbiterRequest::GetAccounting { limit }).await? {
+        self.get_accounting_window(limit, None).await
+    }
+
+    pub async fn get_accounting_window(
+        &mut self,
+        limit: usize,
+        days: Option<u32>,
+    ) -> Result<(AccountingSummary, Vec<AuditRecord>), anyhow::Error> {
+        match self.call(ArbiterRequest::GetAccounting { limit, days }).await? {
             ArbiterResponse::Accounting { summary, recent } => Ok((summary, recent)),
             other => Err(anyhow::anyhow!("Unexpected response: {:?}", other)),
         }

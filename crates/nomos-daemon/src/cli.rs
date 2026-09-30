@@ -97,6 +97,9 @@ pub struct RunCliArgs {
 
 #[derive(Args, Debug)]
 pub struct AccountingArgs {
+    /// Time window in days to aggregate accounting metrics (default: 30)
+    #[arg(long, default_value = "30")]
+    pub days: u32,
     /// Limit number of recent records
     #[arg(long, default_value = "20")]
     pub limit: usize,

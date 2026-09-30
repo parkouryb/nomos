@@ -108,10 +108,14 @@ pub fn get_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "nomos_accounting",
-            "description": "Query the historical resource audit ledger: total jobs executed, cumulative CPU core-hours, GPU hours, peak memory recorded, and recent job executions.",
+            "description": "Query the historical resource audit ledger: total jobs executed, cumulative CPU core-hours, GPU hours, peak memory recorded, and recent job executions across a time retention window (default: 30 days).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "days": {
+                        "type": "integer",
+                        "description": "Time window in days to aggregate accounting metrics (default: 30)"
+                    },
                     "limit": {
                         "type": "integer",
                         "description": "Maximum number of recent records to return. Default: 20"
@@ -489,21 +493,24 @@ async fn handle_nomos_status(sock_path: &std::path::Path) -> Result<(String, boo
 
 async fn handle_nomos_accounting(sock_path: &std::path::Path, arguments: Value) -> Result<(String, bool), String> {
     let limit = arguments.get("limit").and_then(|v| v.as_u64()).map(|l| l as usize).unwrap_or(20);
+    let days = arguments.get("days").and_then(|v| v.as_u64()).map(|d| d as u32).or(Some(30));
 
     let mut client = NomosClient::connect(sock_path).await
         .map_err(|e| format!("Cannot connect to Nomos Arbiter at {:?}: {}. Please start daemon with 'nomos daemon'.", sock_path, e))?;
 
-    let (summary, recent) = client.get_accounting(limit).await
+    let (summary, recent) = client.get_accounting_window(limit, days).await
         .map_err(|e| format!("Failed to query accounting ledger: {}", e))?;
 
+    let days_label = days.map(|d| format!(" (Last {} Days)", d)).unwrap_or_default();
     let mut report = format!(
-        "=== NOMOS RESOURCE ACCOUNTING LEDGER ===\n\
+        "=== NOMOS RESOURCE ACCOUNTING LEDGER{} ===\n\
          Total Jobs Tracked:       {}\n\
          Cumulative CPU Core-Hours: {:.4} hrs\n\
          Cumulative GPU Hours:      {:.4} hrs\n\
          Peak Memory Recorded:      {}\n\
          ------------------------------------\n\
          Recent Completed Jobs (Last {}):\n",
+        days_label,
         summary.total_records,
         summary.total_cpu_hours,
         summary.total_gpu_hours,

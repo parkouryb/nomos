@@ -11,7 +11,11 @@ pub enum ArbiterRequest {
     ReleaseLease { lease_id: String },
     QueryLease { lease_id: String },
     GetStatus,
-    GetAccounting { limit: usize },
+    GetAccounting {
+        limit: usize,
+        #[serde(default)]
+        days: Option<u32>,
+    },
     SetBudget(BudgetConfig),
 }
 

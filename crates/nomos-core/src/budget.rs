@@ -35,6 +35,8 @@ pub struct BudgetConfig {
     pub storage_limit: String, // e.g. "200GB"
     #[serde(default = "default_max_active_leases")]
     pub max_active_leases: usize,
+    #[serde(default = "default_audit_retention_days")]
+    pub audit_retention_days: u32,
 }
 
 fn default_mode() -> String {
@@ -55,6 +57,9 @@ fn default_storage_limit() -> String {
 fn default_max_active_leases() -> usize {
     100
 }
+fn default_audit_retention_days() -> u32 {
+    30
+}
 
 impl Default for BudgetConfig {
     fn default() -> Self {
@@ -65,6 +70,7 @@ impl Default for BudgetConfig {
             host_reserve_memory: default_host_reserve_memory(),
             storage_limit: default_storage_limit(),
             max_active_leases: default_max_active_leases(),
+            audit_retention_days: default_audit_retention_days(),
         }
     }
 }
@@ -224,6 +230,7 @@ mod tests {
             host_reserve_memory: "8GB".into(),
             storage_limit: "200GB".into(),
             max_active_leases: 100,
+            audit_retention_days: 30,
         };
 
         let pool = NomosPool::from_config(&cfg, &host).unwrap();
