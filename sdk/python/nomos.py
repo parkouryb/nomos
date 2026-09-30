@@ -76,26 +76,32 @@ class NomosClient:
                 "Ensure 'nomos daemon' is running."
             )
 
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        try:
-            sock.connect(self.socket_path)
-            req_bytes = (json.dumps(request_payload) + "\n").encode("utf-8")
-            sock.sendall(req_bytes)
+        max_retries = 3
+        for attempt in range(max_retries):
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                sock.connect(self.socket_path)
+                req_bytes = (json.dumps(request_payload) + "\n").encode("utf-8")
+                sock.sendall(req_bytes)
 
-            buffer = ""
-            while True:
-                chunk = sock.recv(4096).decode("utf-8")
-                if not chunk:
-                    break
-                buffer += chunk
-                if "\n" in buffer:
-                    line, _ = buffer.split("\n", 1)
-                    return json.loads(line)
-            if buffer.strip():
-                return json.loads(buffer.strip())
-            raise NomosError("Empty response received from Nomos arbiter")
-        finally:
-            sock.close()
+                buffer = ""
+                while True:
+                    chunk = sock.recv(4096).decode("utf-8")
+                    if not chunk:
+                        break
+                    buffer += chunk
+                    if "\n" in buffer:
+                        line, _ = buffer.split("\n", 1)
+                        return json.loads(line)
+                if buffer.strip():
+                    return json.loads(buffer.strip())
+                raise NomosError("Empty response received from Nomos arbiter")
+            except (ConnectionRefusedError, ConnectionResetError, BrokenPipeError, socket.error) as e:
+                if attempt == max_retries - 1:
+                    raise NomosError(f"Socket connection error after {max_retries} attempts: {e}")
+                time.sleep(0.05 * (attempt + 1))
+            finally:
+                sock.close()
 
     def query_lease(self, lease_id: str) -> Any:
         return self._call({"QueryLease": {"lease_id": lease_id}})
@@ -107,6 +113,7 @@ class NomosClient:
         memory: Union[int, str] = "1GB",
         scratch: Optional[Union[int, str]] = None,
         devices: Optional[List[str]] = None,
+        network_mode: str = "isolated",
         depends_on: Optional[List[str]] = None,
         priority: str = "Normal",
         ttl: int = 60,
@@ -137,7 +144,7 @@ class NomosClient:
                 "req_memory_bytes": mem_bytes,
                 "req_scratch_bytes": scratch_bytes,
                 "devices": formatted_devices,
-                "network_mode": "isolated",
+                "network_mode": network_mode.lower(),
                 "network_bandwidth_mbps": None,
                 "estimated_seconds": None,
                 "deadline": None,
@@ -207,6 +214,7 @@ def lease(
     memory: Union[int, str] = "1GB",
     scratch: Optional[Union[int, str]] = None,
     devices: Optional[List[str]] = None,
+    network_mode: str = "isolated",
     worker_id: Optional[str] = None,
     depends_on: Optional[List[str]] = None,
     priority: str = "Normal",
@@ -219,8 +227,8 @@ def lease(
     heartbeat thread, and automatically releases the lease on block exit.
 
     Example:
-        with nomos.lease(cpu=2.0, memory="4GB", devices=["arc"]):
-            # Run delicate GPU inference
+        with nomos.lease(cpu=2.0, memory="4GB", network_mode="none"):
+            # Air-gapped confidential task
             pass
     """
     client = NomosClient(socket_path=socket_path)
@@ -230,6 +238,7 @@ def lease(
         memory=memory,
         scratch=scratch,
         devices=devices,
+        network_mode=network_mode,
         depends_on=depends_on,
         priority=priority,
         ttl=ttl,

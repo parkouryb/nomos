@@ -19,6 +19,7 @@ pub struct RunArgs {
     pub depends_on: Vec<String>,
     pub socket_path: Option<PathBuf>,
     pub command: Vec<String>,
+    pub network_mode: NetworkMode,
 }
 
 pub async fn execute_runner(args: RunArgs) -> Result<ExitStatus, anyhow::Error> {
@@ -60,7 +61,7 @@ pub async fn execute_runner(args: RunArgs) -> Result<ExitStatus, anyhow::Error> 
         req_memory_bytes: mem_bytes,
         req_scratch_bytes: scratch_bytes,
         devices,
-        network_mode: NetworkMode::Isolated,
+        network_mode: args.network_mode,
         network_bandwidth_mbps: None,
         estimated_seconds: None,
         deadline: None,
@@ -69,7 +70,10 @@ pub async fn execute_runner(args: RunArgs) -> Result<ExitStatus, anyhow::Error> 
         ttl_seconds: args.ttl,
     };
 
-    info!("Worker '{}' requesting lease for command {:?} (CPU: {:.1}, RAM: {})...", worker_name, args.command, args.cpu, args.memory);
+    info!(
+        "Worker '{}' requesting lease for command {:?} (CPU: {:.1}, RAM: {}, Network: {})...",
+        worker_name, args.command, args.cpu, args.memory, args.network_mode
+    );
     let lease = client.acquire_lease(lease_req).await?;
     info!("Lease {} GRANTED to worker '{}'! Starting child process...", lease.id, worker_name);
 
@@ -100,7 +104,25 @@ pub async fn execute_runner(args: RunArgs) -> Result<ExitStatus, anyhow::Error> 
         child.args(&args.command[1..]);
     }
 
-    let status = child.status().await;
+    let mut child_proc = child.spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to spawn command {:?}: {}", args.command, e))?;
+
+    if let Some(pid) = child_proc.id() {
+        let cgroups = nomos_sys::cgroup::CgroupController::new();
+        if let Err(e) = cgroups.attach_pid_with_mode(&lease.id, args.network_mode, pid) {
+            tracing::warn!(
+                "Could not attach PID {} to cgroup slice {} (mode: {}): {}",
+                pid, lease.id, args.network_mode, e
+            );
+        } else {
+            info!(
+                "Attached PID {} (network: {}) to cgroup slice {}",
+                pid, args.network_mode, lease.id
+            );
+        }
+    }
+
+    let status = child_proc.wait().await;
 
     // Stop heartbeat task
     let _ = cancel_tx.send(());

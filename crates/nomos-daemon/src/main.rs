@@ -179,6 +179,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 depends_on: args.depends_on,
                 socket_path: args.socket,
                 command: args.command,
+                network_mode: args.network,
             };
             let status = runner::execute_runner(run_args).await?;
             if !status.success() {

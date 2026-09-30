@@ -68,6 +68,9 @@ pub struct RunCliArgs {
     /// Required hardware devices (e.g. gpu, npu)
     #[arg(long = "device")]
     pub devices: Vec<String>,
+    /// Network egress isolation mode (isolated: LAN & loopback only, none: air-gapped, host: full host network)
+    #[arg(long = "network", default_value = "isolated")]
+    pub network: nomos_core::lease::NetworkMode,
     /// Priority level (10 = Low, 50 = Normal, 75 = High, 100 = Critical)
     #[arg(long, default_value = "50")]
     pub priority: u32,
@@ -97,3 +100,51 @@ pub struct AccountingArgs {
     #[arg(short, long)]
     pub socket: Option<PathBuf>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nomos_core::lease::NetworkMode;
+
+    #[test]
+    fn test_cli_network_flag_default() {
+        let args = Cli::try_parse_from(["nomos", "run", "--", "echo", "hello"]).unwrap();
+        if let Commands::Run(run_args) = args.command {
+            assert_eq!(run_args.network, NetworkMode::Isolated);
+            assert_eq!(run_args.command, vec!["echo", "hello"]);
+        } else {
+            panic!("Expected Commands::Run");
+        }
+    }
+
+    #[test]
+    fn test_cli_network_flag_explicit() {
+        let args_none = Cli::try_parse_from(["nomos", "run", "--network", "none", "--", "ls"]).unwrap();
+        if let Commands::Run(run_args) = args_none.command {
+            assert_eq!(run_args.network, NetworkMode::None);
+        } else {
+            panic!("Expected Commands::Run");
+        }
+
+        let args_host = Cli::try_parse_from(["nomos", "run", "--network", "host", "--", "ls"]).unwrap();
+        if let Commands::Run(run_args) = args_host.command {
+            assert_eq!(run_args.network, NetworkMode::Host);
+        } else {
+            panic!("Expected Commands::Run");
+        }
+
+        let args_isolated = Cli::try_parse_from(["nomos", "run", "--network", "isolated", "--", "ls"]).unwrap();
+        if let Commands::Run(run_args) = args_isolated.command {
+            assert_eq!(run_args.network, NetworkMode::Isolated);
+        } else {
+            panic!("Expected Commands::Run");
+        }
+    }
+
+    #[test]
+    fn test_cli_network_flag_invalid() {
+        let res = Cli::try_parse_from(["nomos", "run", "--network", "invalid", "--", "ls"]);
+        assert!(res.is_err());
+    }
+}
+

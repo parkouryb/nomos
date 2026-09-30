@@ -121,6 +121,7 @@ impl ArbiterActor {
                         l.request.req_cpu,
                         l.request.req_memory_bytes,
                         None,
+                        l.request.network_mode,
                     ) {
                         info!("Created cgroup slice at {:?}", slice);
                     }
@@ -175,6 +176,7 @@ impl ArbiterActor {
                         granted.request.req_cpu,
                         granted.request.req_memory_bytes,
                         None,
+                        granted.request.network_mode,
                     );
                 }
 
@@ -218,7 +220,13 @@ impl ArbiterActor {
             let (_rel, newly_granted) = self.scheduler.release_lease(&id);
             let _ = self.cgroups.destroy_lease_slice(&id);
             for g in newly_granted {
-                let _ = self.cgroups.create_lease_slice(&g.id, g.request.req_cpu, g.request.req_memory_bytes, None);
+                let _ = self.cgroups.create_lease_slice(
+                    &g.id,
+                    g.request.req_cpu,
+                    g.request.req_memory_bytes,
+                    None,
+                    g.request.network_mode,
+                );
             }
         }
 
@@ -229,7 +237,13 @@ impl ArbiterActor {
             let (_rel, newly_granted) = self.scheduler.release_lease(&id);
             let _ = self.cgroups.destroy_lease_slice(&id);
             for g in newly_granted {
-                let _ = self.cgroups.create_lease_slice(&g.id, g.request.req_cpu, g.request.req_memory_bytes, None);
+                let _ = self.cgroups.create_lease_slice(
+                    &g.id,
+                    g.request.req_cpu,
+                    g.request.req_memory_bytes,
+                    None,
+                    g.request.network_mode,
+                );
             }
         }
     }
