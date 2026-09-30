@@ -127,6 +127,40 @@ python3 examples/dag_pipeline_demo.py
 
 ---
 
+## Model Context Protocol (MCP) Integration for LLMs
+
+Nomos natively implements the Model Context Protocol (MCP) over `stdio` via JSON-RPC 2.0. This allows AI assistants like Claude Desktop, Cursor, Claude Code, Cline, and Windsurf to execute shell commands, train models, run tests, and probe hardware strictly bounded by Nomos resource budgets and network isolation.
+
+### Claude Desktop & Cursor Configuration
+
+Add Nomos to your `claude_desktop_config.json` (on macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`, on Linux: `~/.config/Claude/claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "nomos": {
+      "command": "nomos",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Or specify the absolute binary path (e.g. `/usr/local/bin/nomos` or `/home/<user>/.local/bin/nomos`).
+
+### Tools Exposed to LLMs
+
+| Tool | Parameters | Description |
+|---|---|---|
+| `nomos_run` | `command`, `cpu`, `memory`, `devices`, `network`, `priority`, `timeout_seconds`, `working_dir` | Execute shell command bounded by vCPU, RAM, GPU/NPU, and network isolation mode (`isolated`, `none`, `host`). Prevents OOM crashes. |
+| `nomos_probe` | None | Probe physical host hardware telemetry (Cores, RAM, Swap, Storage, GPU, NPU). |
+| `nomos_status` | None | Query current arbiter pool headroom, active leases, and queued waiting requests. |
+| `nomos_accounting` | `limit` | Query historical resource audit ledger and cumulative CPU/GPU core-hours. |
+| `nomos_acquire` | `worker_id`, `cpu`, `memory`, `priority`, `ttl_seconds` | Manually acquire an explicit resource lease for multi-step workflows. |
+| `nomos_release` | `lease_id` | Release an explicitly acquired resource lease. |
+
+---
+
 ## Systemd Service Installation (Linux Host)
 
 Install Nomos as a background systemd service with Cgroups v2 delegation:

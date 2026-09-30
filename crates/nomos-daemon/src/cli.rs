@@ -24,6 +24,8 @@ pub enum Commands {
     Accounting(AccountingArgs),
     /// Recompile, update Nomos binary, configuration, and restart background daemon
     Update,
+    /// Run Model Context Protocol (MCP) server over stdio for LLMs (Claude Desktop, Cursor)
+    Mcp(McpArgs),
 }
 
 #[derive(Args, Debug)]
@@ -103,10 +105,34 @@ pub struct AccountingArgs {
     pub socket: Option<PathBuf>,
 }
 
+#[derive(Args, Debug)]
+pub struct McpArgs {
+    /// Custom Unix socket path to Nomos arbiter daemon
+    #[arg(short, long)]
+    pub socket: Option<PathBuf>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use nomos_core::lease::NetworkMode;
+
+    #[test]
+    fn test_cli_mcp_command() {
+        let args = Cli::try_parse_from(["nomos", "mcp"]).unwrap();
+        if let Commands::Mcp(mcp_args) = args.command {
+            assert!(mcp_args.socket.is_none());
+        } else {
+            panic!("Expected Commands::Mcp");
+        }
+
+        let args_sock = Cli::try_parse_from(["nomos", "mcp", "--socket", "/tmp/test.sock"]).unwrap();
+        if let Commands::Mcp(mcp_args) = args_sock.command {
+            assert_eq!(mcp_args.socket.unwrap(), PathBuf::from("/tmp/test.sock"));
+        } else {
+            panic!("Expected Commands::Mcp");
+        }
+    }
 
     #[test]
     fn test_cli_network_flag_default() {

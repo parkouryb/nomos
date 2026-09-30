@@ -2,6 +2,7 @@ mod actor;
 mod cli;
 mod client;
 mod ipc;
+mod mcp;
 mod runner;
 mod server;
 mod tui;
@@ -106,8 +107,9 @@ async fn main() -> Result<(), anyhow::Error> {
                 println!("===============================================================================");
                 println!(" NOMOS RESOURCE ARBITER STATUS");
                 println!("===============================================================================");
+                let alloc_cpu = if status.allocated_cpu.abs() < 1e-6 { 0.0 } else { status.allocated_cpu };
                 let cpu_pct = if status.pool.total_cores > 0.0 {
-                    status.allocated_cpu / status.pool.total_cores * 100.0
+                    alloc_cpu / status.pool.total_cores * 100.0
                 } else {
                     0.0
                 };
@@ -118,7 +120,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 };
                 println!(
                     " CPU ALLOCATION:    {:.1} / {:.1} Cores ({:.1}% of Nomos Pool)",
-                    status.allocated_cpu, status.pool.total_cores, cpu_pct
+                    alloc_cpu, status.pool.total_cores, cpu_pct
                 );
                 println!(
                     " RAM ALLOCATION:    {} / {} ({:.1}% of Nomos Pool)",
@@ -235,6 +237,16 @@ async fn main() -> Result<(), anyhow::Error> {
                 eprintln!("[ERROR] Could not locate 'install.sh'. Please run from the Nomos repository directory.");
                 std::process::exit(1);
             }
+        }
+
+        Commands::Mcp(args) => {
+            // Route tracing exclusively to stderr so stdout is reserved for JSON-RPC 2.0 messages
+            tracing_subscriber::fmt()
+                .with_writer(std::io::stderr)
+                .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()))
+                .init();
+
+            mcp::run_mcp_server(args.socket).await?;
         }
     }
 
