@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "nomos": {
+      "command": "nomos",
+      "args": ["mcp"]
+    }
+  }
+}

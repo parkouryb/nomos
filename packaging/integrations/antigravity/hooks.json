@@ -1,0 +1,29 @@
+{
+  "nomos-arbiter": {
+    "enabled": true,
+    "PreToolUse": [
+      {
+        "matcher": "run_command|invoke_subagent|generate_image",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.gemini/config/scripts/nomos_hook.py pre",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "run_command|invoke_subagent|generate_image",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.gemini/config/scripts/nomos_hook.py post",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

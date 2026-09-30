@@ -2,6 +2,7 @@
 # ==============================================================================
 # NOMOS (Νόμος) — One-Command Universal Installer & Updater
 # Supports: macOS (Apple Silicon / Intel) & Linux (Ubuntu / Debian / Systemd)
+# Automatically configures Antigravity (AGY) & Claude Desktop MCP & Hooks
 # ==============================================================================
 set -euo pipefail
 
@@ -37,7 +38,7 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 # 2. Stop running daemon service if active to avoid 'text file busy' errors
-echo "[1/6] Stopping active Nomos daemon services (if running)..."
+echo "[1/8] Stopping active Nomos daemon services (if running)..."
 if [ "${OS}" = "Linux" ]; then
     if command -v systemctl >/dev/null 2>&1; then
         systemctl --user stop nomos.service 2>/dev/null || true
@@ -51,7 +52,7 @@ pkill -f "nomos daemon" 2>/dev/null || true
 sleep 0.5
 
 # 3. Compile or verify release binary
-echo "[2/6] Compiling Nomos release binary with native optimizations..."
+echo "[2/8] Compiling Nomos release binary with native optimizations..."
 cd "${SCRIPT_DIR}"
 
 # Safely rename existing target binary so cargo builds a new inode
@@ -69,7 +70,7 @@ fi
 rm -f "${RELEASE_BIN}.old" 2>/dev/null || true
 
 # 4. Install binary to user PATH atomically
-echo "[3/6] Installing ${BIN_NAME} executable to ${INSTALL_DIR} and ~/.cargo/bin..."
+echo "[3/8] Installing ${BIN_NAME} executable to ${INSTALL_DIR} and ~/.cargo/bin..."
 mkdir -p "${INSTALL_DIR}" "${HOME}/.cargo/bin"
 
 # Atomic install to ~/.local/bin
@@ -89,7 +90,6 @@ setup_path_in_file() {
     local file="$1"
     if [ -f "${file}" ]; then
         if ! grep -q 'nomos_path_setup' "${file}" 2>/dev/null; then
-            # Prepend before non-interactive shell check if present
             if grep -q 'case \$- in' "${file}" 2>/dev/null; then
                 sed -i.bak '1s|^|# nomos_path_setup\nexport PATH=\"\$HOME/.local/bin:\$HOME/.cargo/bin:\$PATH\"\n|' "${file}"
                 rm -f "${file}.bak"
@@ -107,7 +107,7 @@ setup_path_in_file "${HOME}/.profile"
 export PATH="${INSTALL_DIR}:${HOME}/.cargo/bin:${PATH}"
 
 # 5. Initialize configuration
-echo "[4/6] Setting up configuration at ${CONFIG_DIR}/nomos.toml..."
+echo "[4/8] Setting up configuration at ${CONFIG_DIR}/nomos.toml..."
 mkdir -p "${CONFIG_DIR}"
 if [ ! -f "${CONFIG_DIR}/nomos.toml" ]; then
     cp "${SCRIPT_DIR}/nomos.toml" "${CONFIG_DIR}/nomos.toml"
@@ -118,15 +118,15 @@ fi
 
 # 6. Install Python SDK
 if command -v python3 >/dev/null 2>&1; then
-    echo "[5/6] Installing / Updating Nomos Python Client SDK..."
+    echo "[5/8] Installing / Updating Nomos Python Client SDK..."
     python3 -m pip install -e "${SCRIPT_DIR}/sdk/python" --break-system-packages 2>/dev/null || \
     python3 -m pip install --user -e "${SCRIPT_DIR}/sdk/python" 2>/dev/null || \
     python3 -m pip install -e "${SCRIPT_DIR}/sdk/python" 2>/dev/null || \
     echo "  [WARNING] Python pip install failed, SDK available directly at ${SCRIPT_DIR}/sdk/python"
 fi
 
-# 7. Configure and start background daemon service
-echo "[6/6] Configuring and activating background daemon service..."
+# 7. Configure background daemon service
+echo "[6/8] Configuring and activating background daemon service..."
 if [ "${OS}" = "Linux" ]; then
     SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
     mkdir -p "${SYSTEMD_USER_DIR}"
@@ -191,9 +191,69 @@ EOF
     echo "  - macOS LaunchAgent active: com.nomos.arbiter"
 fi
 
-# 8. Verification
+# 8. Configure AI Assistant Integrations (Antigravity & Claude Desktop)
+echo "[7/8] Configuring AI Assistant Integrations (Antigravity & Claude Desktop)..."
+
+# Antigravity (AGY) Integration
+AGY_CONFIG_DIR="${HOME}/.gemini/config"
+if [ -d "${HOME}/.gemini" ] || [ -d "${AGY_CONFIG_DIR}" ]; then
+    mkdir -p "${AGY_CONFIG_DIR}/scripts"
+    if [ -f "${SCRIPT_DIR}/packaging/integrations/antigravity/nomos_hook.py" ]; then
+        cp -f "${SCRIPT_DIR}/packaging/integrations/antigravity/nomos_hook.py" "${AGY_CONFIG_DIR}/scripts/nomos_hook.py"
+        chmod +x "${AGY_CONFIG_DIR}/scripts/nomos_hook.py"
+        echo "  - Antigravity Hook installed: ${AGY_CONFIG_DIR}/scripts/nomos_hook.py"
+    fi
+    if [ -f "${SCRIPT_DIR}/packaging/integrations/antigravity/hooks.json" ]; then
+        cp -f "${SCRIPT_DIR}/packaging/integrations/antigravity/hooks.json" "${AGY_CONFIG_DIR}/hooks.json"
+        echo "  - Antigravity Hook configured: ${AGY_CONFIG_DIR}/hooks.json"
+    fi
+    # Configure MCP in mcp_config.json
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c "
+import json, os
+p = os.path.expanduser('~/.gemini/config/mcp_config.json')
+os.makedirs(os.path.dirname(p), exist_ok=True)
+data = {}
+if os.path.exists(p):
+    try:
+        with open(p, 'r') as f: data = json.load(f)
+    except Exception: pass
+if 'mcpServers' not in data: data['mcpServers'] = {}
+data['mcpServers']['nomos'] = {'command': '${INSTALL_DIR}/${BIN_NAME}', 'args': ['mcp']}
+with open(p, 'w') as f: json.dump(data, f, indent=2)
+" 2>/dev/null && echo "  - Antigravity MCP Server registered: ${AGY_CONFIG_DIR}/mcp_config.json" || true
+    fi
+fi
+
+# Claude Desktop Integration
+CLAUDE_CONFIG=""
+CLAUDE_DIR=""
+if [ "${OS}" = "Darwin" ]; then
+    CLAUDE_DIR="${HOME}/Library/Application Support/Claude"
+    CLAUDE_CONFIG="${CLAUDE_DIR}/claude_desktop_config.json"
+elif [ "${OS}" = "Linux" ]; then
+    CLAUDE_DIR="${HOME}/.config/Claude"
+    CLAUDE_CONFIG="${CLAUDE_DIR}/claude_desktop_config.json"
+fi
+
+if [ -n "${CLAUDE_CONFIG}" ] && [ -d "${CLAUDE_DIR}" ] && command -v python3 >/dev/null 2>&1; then
+    python3 -c "
+import json, os
+p = os.path.expanduser('${CLAUDE_CONFIG}')
+data = {}
+if os.path.exists(p):
+    try:
+        with open(p, 'r') as f: data = json.load(f)
+    except Exception: pass
+if 'mcpServers' not in data: data['mcpServers'] = {}
+data['mcpServers']['nomos'] = {'command': '${INSTALL_DIR}/${BIN_NAME}', 'args': ['mcp']}
+with open(p, 'w') as f: json.dump(data, f, indent=2)
+" 2>/dev/null && echo "  - Claude Desktop MCP Server registered: ${CLAUDE_CONFIG}" || true
+fi
+
+# 9. Verification
 echo "-------------------------------------------------------------------------------"
-echo "Verifying Nomos Arbiter Daemon response..."
+echo "[8/8] Verifying Nomos Arbiter Daemon response..."
 sleep 1.5
 
 VERIFIED=false
@@ -214,6 +274,7 @@ if [ "${VERIFIED}" = "true" ]; then
     echo " Config:      ${CONFIG_DIR}/nomos.toml"
     echo " Web UI:      http://localhost:9100"
     echo " Python SDK:  import nomos ($("${INSTALL_DIR}/${BIN_NAME}" --version))"
+    echo " AI Agents:   Antigravity & Claude Desktop automatically configured with MCP & Hooks"
     echo "==============================================================================="
 else
     echo "[WARNING] Daemon socket not ready yet. Please check: ${INSTALL_DIR}/${BIN_NAME} status"
