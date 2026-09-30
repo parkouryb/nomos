@@ -271,6 +271,11 @@ impl Scheduler {
             }
 
             self.wait_queue = remaining_queue;
+        } else if let Some(pos) = self.wait_queue.iter().position(|l| l.id == lease_id) {
+            if let Some(mut lease) = self.wait_queue.remove(pos) {
+                lease.mark_completed();
+                released_opt = Some(lease);
+            }
         }
 
         (released_opt, newly_granted)
