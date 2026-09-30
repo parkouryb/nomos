@@ -826,12 +826,24 @@ def main():
 
     daemon_mgr = None
     if args.spawn_daemon or not os.path.exists(socket_path):
-        daemon_bin = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", args.daemon_bin))
-        if not os.path.exists(daemon_bin):
-            # Try workspace root target/debug/nomos
-            daemon_bin = os.path.abspath(os.path.join(os.getcwd(), args.daemon_bin))
-        if not os.path.exists(daemon_bin):
-            Log.print(Log.FAIL, f"Nomos binary not found at {daemon_bin}. Please run 'cargo build' first.")
+        candidates = [
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", args.daemon_bin)),
+            os.path.abspath(os.path.join(os.getcwd(), args.daemon_bin)),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "target/release/nomos")),
+            os.path.abspath(os.path.join(os.getcwd(), "target/release/nomos")),
+            os.path.expanduser("~/.cargo/bin/nomos"),
+        ]
+        daemon_bin = None
+        for cand in candidates:
+            if os.path.exists(cand):
+                daemon_bin = cand
+                break
+        if not daemon_bin:
+            import shutil
+            daemon_bin = shutil.which("nomos")
+
+        if not daemon_bin or not os.path.exists(daemon_bin):
+            Log.print(Log.FAIL, f"Nomos binary not found. Searched {candidates}. Please run 'cargo build' first.")
             sys.exit(1)
 
         daemon_mgr = DaemonManager(daemon_bin, socket_path, port=args.port)

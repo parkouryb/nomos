@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.nomos.arbiter</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/hieu/.local/bin/nomos</string>
+        <string>daemon</string>
+        <string>--config</string>
+        <string>/Users/hieu/.nomos/nomos.toml</string>
+        <string>--port</string>
+        <string>9100</string>
+    </array>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/Users/hieu/.nomos/daemon.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/hieu/.nomos/daemon.err</string>
+    <key>WorkingDirectory</key>
+    <string>/Users/hieu</string>
+</dict>
+</plist>

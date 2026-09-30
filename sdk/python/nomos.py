@@ -12,6 +12,9 @@ import threading
 from contextlib import contextmanager
 from typing import Optional, List, Dict, Any, Union
 
+__version__ = "0.1.0"
+__all__ = ["NomosClient", "Lease", "NomosError", "lease", "parse_bytes", "default_socket_path", "__version__"]
+
 def default_socket_path() -> str:
     env_sock = os.environ.get("NOMOS_SOCKET")
     if env_sock:
