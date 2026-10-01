@@ -172,3 +172,17 @@ nomos/
 ├── nomos.toml            # Reference configuration file
 └── Cargo.toml            # Multi-crate Cargo workspace
 ```
+
+---
+
+## License & Commercial Use
+
+Nomos is source-available and licensed under the **[PolyForm Noncommercial License 1.0.0](LICENSE)**.
+
+- **Noncommercial Use:** Free for personal use, learning, academic research, and noncommercial evaluation.
+- **Commercial Use:** Commercial purposes (such as running in commercial production, enterprise agent fleets, or embedding into commercial offerings) require a separate commercial license.
+
+For commercial licensing agreements, custom enterprise integrations, or support inquiries, please contact:
+- **Author:** Hieu ([@parkouryb](https://github.com/parkouryb))
+- **Email:** [147523689a@gmail.com](mailto:147523689a@gmail.com)
+

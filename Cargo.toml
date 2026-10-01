@@ -9,8 +9,8 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["Nomos Systems Architecture"]
-license = "MIT OR Apache-2.0"
+authors = ["Hieu (@parkouryb) <147523689a@gmail.com>"]
+license = "PolyForm-Noncommercial-1.0.0"
 
 [workspace.dependencies]
 tokio = { version = "1.38", features = ["full"] }
