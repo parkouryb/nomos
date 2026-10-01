@@ -26,7 +26,7 @@ Install or update Nomos, background service daemon, PATH, configuration, Python 
 
 ```bash
 # Clone and install
-git clone https://github.com/mouse-ion/nomos.git
+git clone https://github.com/parkouryb/nomos.git
 cd nomos
 ./install.sh
 
