@@ -15,7 +15,7 @@ use ipc::{default_socket_path, IpcServer};
 use nomos_core::budget::{format_bytes, BudgetConfig, NomosPool};
 use nomos_sys::probe::probe_host;
 use std::fs;
-use tracing::{error, info};
+use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -69,29 +69,20 @@ async fn main() -> Result<(), anyhow::Error> {
             );
 
             let audit_path = dirs_next().join("audit.jsonl").to_str().map(|s| s.to_string());
-            let (handle, _actor_join) = actor::ArbiterActor::spawn(pool, audit_path, config.audit_retention_days);
+            let (handle, _actor_join) = actor::ArbiterActor::spawn(pool, audit_path, config.audit_retention_days)?;
 
             // Start IPC Unix Socket server
             let sock_path = args.socket.unwrap_or_else(default_socket_path);
             let ipc_server = IpcServer::new(sock_path, handle.clone());
-            tokio::spawn(async move {
-                if let Err(e) = ipc_server.run().await {
-                    error!("IPC Server terminated with error: {}", e);
-                }
-            });
+            let mut ipc_task = tokio::spawn(ipc_server.run());
+            let mut web_task = tokio::spawn(web::start_web_server(args.port, handle.clone()));
+            info!("Nomos running with verified cgroup v2 enforcement");
+            tokio::select! {
+                result = &mut ipc_task => { web_task.abort(); result??; anyhow::bail!("IPC server stopped"); },
+                result = &mut web_task => { ipc_task.abort(); result??; anyhow::bail!("Web server stopped"); },
+                result = tokio::signal::ctrl_c() => { result?; ipc_task.abort(); web_task.abort(); },
+            }
 
-            // Start Web Server
-            let web_port = args.port;
-            let web_handle = handle.clone();
-            tokio::spawn(async move {
-                if let Err(e) = web::start_web_server(web_port, web_handle).await {
-                    error!("Web server error: {}", e);
-                }
-            });
-
-            info!("Nomos Arbiter daemon running. Press Ctrl+C to terminate.");
-            tokio::signal::ctrl_c().await?;
-            info!("Received shutdown signal, terminating Nomos daemon.");
         }
 
         Commands::Status(args) => {

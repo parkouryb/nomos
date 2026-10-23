@@ -12,8 +12,8 @@ import threading
 from contextlib import contextmanager
 from typing import Optional, List, Dict, Any, Union
 
-__version__ = "0.1.0"
-__all__ = ["NomosClient", "Lease", "NomosError", "lease", "parse_bytes", "default_socket_path", "__version__"]
+__version__ = "0.2.0"
+__all__ = ["NomosClient", "Lease", "NomosError", "lease", "run", "parse_bytes", "default_socket_path", "__version__"]
 
 def default_socket_path() -> str:
     env_sock = os.environ.get("NOMOS_SOCKET")
@@ -84,6 +84,7 @@ class NomosClient:
         for attempt in range(max_retries):
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             try:
+                sock.settimeout(5.0)
                 sock.connect(self.socket_path)
                 req_bytes = (json.dumps(request_payload) + "\n").encode("utf-8")
                 sock.sendall(req_bytes)
@@ -171,6 +172,7 @@ class NomosClient:
             reason = queued_info.get("reason", "")
 
             if not wait:
+                self.release(lease_id)
                 raise NomosError(f"Lease queued at position #{pos}: {reason}")
 
             start_time = time.time()
@@ -182,6 +184,7 @@ class NomosClient:
                 if "Error" in poll_resp:
                     raise NomosError(f"Lease failed while queued: {poll_resp['Error']}")
 
+            self.release(lease_id)
             raise NomosError(f"Timed out after {timeout}s waiting for lease {lease_id}")
 
         if "Error" in resp:
@@ -226,48 +229,18 @@ def lease(
     socket_path: Optional[str] = None,
     timeout: float = 300.0,
 ):
-    """
-    Context manager that acquires a Nomos lease, runs a background dead-man's switch
-    heartbeat thread, and automatically releases the lease on block exit.
+    """Unsupported in-process execution: a reservation does not contain this process."""
+    raise NomosError("In-process lease contexts are not kernel-enforced. Use nomos.run([...], network='host') or the nomos run CLI.")
+    yield  # Keep contextmanager call semantics; the user's body is never executed.
 
-    Example:
-        with nomos.lease(cpu=2.0, memory="4GB", network_mode="none"):
-            # Air-gapped confidential task
-            pass
-    """
-    client = NomosClient(socket_path=socket_path)
-    l = client.acquire(
-        worker_id=worker_id,
-        cpu=cpu,
-        memory=memory,
-        scratch=scratch,
-        devices=devices,
-        network_mode=network_mode,
-        depends_on=depends_on,
-        priority=priority,
-        ttl=ttl,
-        wait=True,
-        timeout=timeout,
-    )
 
-    stop_event = threading.Event()
-
-    def _heartbeat_loop():
-        while not stop_event.wait(5.0):
-            try:
-                client.heartbeat(l.id)
-            except Exception:
-                pass
-
-    hb_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
-    hb_thread.start()
-
-    try:
-        yield l
-    finally:
-        stop_event.set()
-        hb_thread.join(timeout=1.0)
-        try:
-            client.release(l.id)
-        except Exception as e:
-            sys.stderr.write(f"Warning: Failed to release Nomos lease {l.id}: {e}\n")
+def run(command, *, cpu=1.0, memory="1GB", network, ttl=60, socket_path=None, **kwargs):
+    """Execute a subprocess through the kernel-enforced Nomos runner."""
+    import subprocess
+    if isinstance(command, str) or not command:
+        raise NomosError("command must be a nonempty argv list")
+    if kwargs.get("shell") or "executable" in kwargs:
+        raise NomosError("shell/executable overrides would bypass the enforced runner")
+    args=["nomos","run","--cpu",str(cpu),"--mem",str(memory),"--network",network,"--ttl",str(ttl)]
+    if socket_path: args += ["--socket",socket_path]
+    return subprocess.run(args+["--"]+list(command), **kwargs)

@@ -1,8 +1,6 @@
 use nomos_core::lease::NetworkMode;
-use std::fs;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::path::{Path, PathBuf};
-use tracing::info;
+use std::path::PathBuf;
 
 /// Check if an IPv4 address belongs to RFC 1918 private address space or Link-Local.
 ///
@@ -68,7 +66,6 @@ pub fn is_destination_allowed(mode: NetworkMode, ip: &IpAddr) -> bool {
 #[derive(Debug, Clone)]
 pub struct NetworkIsolationHelper {
     base_cgroup_path: PathBuf,
-    is_cgroup_available: bool,
 }
 
 impl Default for NetworkIsolationHelper {
@@ -79,11 +76,7 @@ impl Default for NetworkIsolationHelper {
 
 impl NetworkIsolationHelper {
     pub fn new(base_cgroup_path: PathBuf) -> Self {
-        let is_available = base_cgroup_path.exists() || Path::new("/sys/fs/cgroup").exists();
-        Self {
-            base_cgroup_path,
-            is_cgroup_available: is_available,
-        }
+        Self { base_cgroup_path }
     }
 
     /// Returns the subdirectory corresponding to the network mode (e.g. `/sys/fs/cgroup/nomos/isolated`).
@@ -97,71 +90,23 @@ impl NetworkIsolationHelper {
         self.mode_cgroup_path(mode).join(lease_id)
     }
 
-    /// Sets up the cgroup directory structure for a lease under its network isolation mode.
-    pub fn setup_lease_slice(&self, lease_id: &str, mode: NetworkMode) -> Result<PathBuf, std::io::Error> {
-        let slice = self.slice_path_for_lease(lease_id, mode);
-        if !self.is_cgroup_available {
-            info!(
-                "[Mock Network Isolation] Configured virtual slice {} (mode: {:?})",
-                lease_id, mode
-            );
-            return Ok(slice);
-        }
-
-        let mode_dir = self.mode_cgroup_path(mode);
-        fs::create_dir_all(&mode_dir)?;
-
-        // Enable subtree control in parent and mode dir if available
-        let _ = fs::write(self.base_cgroup_path.join("cgroup.subtree_control"), "+cpu +memory +io");
-        let _ = fs::write(mode_dir.join("cgroup.subtree_control"), "+cpu +memory +io");
-
-        fs::create_dir_all(&slice)?;
-        info!(
-            "Established cgroup slice for lease {} under network mode '{}': {:?}",
-            lease_id, mode, slice
-        );
-        Ok(slice)
+    /// This legacy helper cannot enforce networking. Use the resource cgroup runner.
+    pub fn setup_lease_slice(&self, _lease_id: &str, _mode: NetworkMode) -> Result<PathBuf, std::io::Error> {
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Network isolation is not implemented; use the enforced CPU/RAM runner with explicit host networking"))
     }
 
-    /// Attaches a process ID to the corresponding cgroup slice.
-    pub fn attach_pid(&self, lease_id: &str, mode: NetworkMode, pid: u32) -> Result<(), std::io::Error> {
-        let slice = self.slice_path_for_lease(lease_id, mode);
-        if !self.is_cgroup_available {
-            info!(
-                "[Mock Network Isolation] Attached PID {} to virtual slice {} (mode: {:?})",
-                pid, lease_id, mode
-            );
-            return Ok(());
-        }
-
-        let procs_file = slice.join("cgroup.procs");
-        if !procs_file.exists() {
-            // Attempt fallback to root base slice if mode dir doesn't exist
-            let fallback = self.base_cgroup_path.join(lease_id).join("cgroup.procs");
-            if fallback.exists() {
-                return fs::write(fallback, pid.to_string());
-            }
-        }
-        fs::write(procs_file, pid.to_string())
+    pub fn attach_pid(&self, _lease_id: &str, _mode: NetworkMode, _pid: u32) -> Result<(), std::io::Error> {
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Legacy network attachment is unsupported; use the enforced runner"))
     }
 
-    /// Locates the lease slice across all network mode directories.
     pub fn find_lease_slice(&self, lease_id: &str) -> Option<(PathBuf, NetworkMode)> {
-        for mode in [NetworkMode::Isolated, NetworkMode::None, NetworkMode::Host] {
-            let candidate = self.slice_path_for_lease(lease_id, mode);
-            if candidate.exists() {
-                return Some((candidate, mode));
-            }
-        }
-        // Check legacy flat path
-        let legacy = self.base_cgroup_path.join(lease_id);
-        if legacy.exists() {
-            return Some((legacy, NetworkMode::Isolated));
-        }
-        None
+        if !lease_id.starts_with("ls-") || !lease_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') { return None; }
+        let candidate = self.slice_path_for_lease(lease_id, NetworkMode::Host);
+        crate::cgroup::require_cgroup2(&candidate).ok()?;
+        Some((candidate, NetworkMode::Host))
     }
 
-    /// Generates the standard Linux iptables rules for Nomos network isolation.
+    /// Generates an unapplied IPv4 policy proposal; this does not enforce network isolation.
     /// These rules leverage `-m cgroup --path` against Cgroups v2.
     pub fn generate_iptables_rules(cgroup_base_rel: &str) -> Vec<String> {
         let isolated_cgroup = format!("{}/isolated", cgroup_base_rel.trim_matches('/'));
@@ -228,6 +173,16 @@ impl NetworkIsolationHelper {
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
+
+    #[test]
+    fn legacy_helper_never_claims_enforcement() {
+        let helper = NetworkIsolationHelper::new(PathBuf::from("/nonexistent/nomos"));
+        for mode in [NetworkMode::Host, NetworkMode::None, NetworkMode::Isolated] {
+            assert!(helper.setup_lease_slice("ls-test", mode.clone()).is_err());
+            assert!(helper.attach_pid("ls-test", mode, 1).is_err());
+        }
+        assert!(helper.find_lease_slice("../escape").is_none());
+    }
 
     #[test]
     fn test_rfc1918_ipv4_detection() {

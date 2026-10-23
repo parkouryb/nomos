@@ -919,7 +919,7 @@ dependencies = [
 
 [[package]]
 name = "nomos"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -947,7 +947,7 @@ dependencies = [
 
 [[package]]
 name = "nomos-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "serde",
@@ -960,7 +960,7 @@ dependencies = [
 
 [[package]]
 name = "nomos-sys"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nix",
  "nomos-core",

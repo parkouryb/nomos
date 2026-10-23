@@ -1,7 +1,7 @@
 use crate::client::NomosClient;
 use crate::ipc::default_socket_path;
 use nomos_core::budget::{format_bytes, parse_bytes_string};
-use nomos_core::lease::{DeviceType, LeaseRequest, NetworkMode, Priority};
+use nomos_core::lease::{LeaseRequest, NetworkMode, Priority};
 use nomos_sys::probe::probe_host;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -44,7 +44,7 @@ pub fn get_tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "nomos_run",
-            "description": "Execute a shell command bounded by Nomos resource arbiter (vCPU, RAM, GPU/NPU, network isolation, priority). Prevents runaway tasks from freezing the host system.",
+            "description": "Execute a command with kernel-enforced CPU/RAM limits on Linux. Explicit host networking is required; GPU/device, scratch and network isolation are unsupported.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -62,17 +62,17 @@ pub fn get_tool_definitions() -> Vec<Value> {
                     },
                     "scratch": {
                         "type": "string",
-                        "description": "Allocated temporary scratch disk space with unit (e.g. '2GB')"
+                        "description": "Unsupported; any scratch request is rejected"
                     },
                     "devices": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Hardware accelerators required (e.g. ['gpu'], ['npu'])"
+                        "description": "Unsupported; nonempty device requests are rejected"
                     },
                     "network": {
                         "type": "string",
-                        "enum": ["isolated", "none", "host"],
-                        "description": "Network egress mode: 'isolated' (LAN and loopback allowed, WAN blocked), 'none' (air-gapped), 'host' (unrestricted). Default: 'isolated'"
+                        "enum": ["host"],
+                        "description": "Required: host networking, without network isolation"
                     },
                     "priority": {
                         "type": "integer",
@@ -87,7 +87,7 @@ pub fn get_tool_definitions() -> Vec<Value> {
                         "description": "Working directory to execute command within"
                     }
                 },
-                "required": ["command"]
+                "required": ["command", "network"]
             }
         }),
         json!({
@@ -170,229 +170,27 @@ pub fn get_tool_definitions() -> Vec<Value> {
     ]
 }
 
-async fn handle_nomos_run(
-    sock_path: &std::path::Path,
-    arguments: Value,
-) -> Result<(String, bool), String> {
-    let command_str = arguments
-        .get("command")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "Missing required parameter 'command'".to_string())?;
-
-    let cpu = arguments
-        .get("cpu")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(1.0);
-
-    let mem_str = arguments
-        .get("memory")
-        .and_then(|v| v.as_str())
-        .unwrap_or("1GB");
-
-    let scratch_str = arguments
-        .get("scratch")
-        .and_then(|v| v.as_str());
-
-    let priority = arguments
-        .get("priority")
-        .and_then(|v| v.as_u64())
-        .map(|p| p as u32)
-        .unwrap_or(50);
-
-    let timeout_secs = arguments
-        .get("timeout_seconds")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(120);
-
-    let working_dir = arguments
-        .get("working_dir")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    let net_mode_str = arguments
-        .get("network")
-        .and_then(|v| v.as_str())
-        .unwrap_or("isolated");
-
-    let network_mode = match net_mode_str.to_lowercase().as_str() {
-        "none" => NetworkMode::None,
-        "host" => NetworkMode::Host,
-        _ => NetworkMode::Isolated,
-    };
-
-    let devices: Vec<DeviceType> = arguments
-        .get("devices")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|x| x.as_str())
-                .map(|d| {
-                    if d.to_lowercase().contains("npu") {
-                        DeviceType::Npu(d.to_string())
-                    } else {
-                        DeviceType::Gpu(d.to_string())
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let mem_bytes = parse_bytes_string(mem_str)
-        .map_err(|e| format!("Invalid memory string '{}': {}", mem_str, e))?;
-
-    let scratch_bytes = if let Some(s) = scratch_str {
-        parse_bytes_string(s).map_err(|e| format!("Invalid scratch string '{}': {}", s, e))?
-    } else {
-        0
-    };
-
-    let mut client = NomosClient::connect(sock_path)
-        .await
-        .map_err(|e| format!("Cannot connect to Nomos Arbiter daemon at {:?}: {}. Please start daemon with 'nomos daemon'.", sock_path, e))?;
-
-    let worker_id = format!("mcp-{}", &uuid::Uuid::new_v4().to_string()[..8]);
-
-    let req = LeaseRequest {
-        worker_id: worker_id.clone(),
-        tenant: "mcp".into(),
-        req_cpu: cpu,
-        req_memory_bytes: mem_bytes,
-        req_scratch_bytes: scratch_bytes,
-        devices,
-        network_mode,
-        network_bandwidth_mbps: None,
-        estimated_seconds: Some(timeout_secs as f64),
-        deadline: None,
-        depends_on: vec![],
-        priority: Priority::from_u32(priority),
-        ttl_seconds: timeout_secs + 30,
-    };
-
-    eprintln!("[nomos-mcp] Acquiring lease for worker '{}' (command: '{}')...", worker_id, command_str);
-    let lease = client.acquire_lease_wait(req, Duration::from_secs(60)).await
-        .map_err(|e| format!("Failed to acquire Nomos lease: {}", e))?;
-
-    eprintln!("[nomos-mcp] Lease '{}' granted. Spawning process...", lease.id);
-
-    // Heartbeat background task
-    let lease_id = lease.id.clone();
-    let hb_sock = sock_path.to_path_buf();
-    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
-
-    let hb_lease_id = lease_id.clone();
-    let hb_handle = tokio::spawn(async move {
-        if let Ok(mut hb_client) = NomosClient::connect(&hb_sock).await {
-            let mut interval = tokio::time::interval(Duration::from_secs(5));
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        let _ = hb_client.heartbeat(&hb_lease_id).await;
-                    }
-                    _ = &mut cancel_rx => {
-                        break;
-                    }
-                }
-            }
-        }
-    });
-
-    let start_time = Instant::now();
-
-    // Spawn process via sh -c
-    let mut cmd = Command::new("sh");
-    cmd.arg("-c").arg(command_str);
-    if let Some(ref dir) = working_dir {
-        cmd.current_dir(dir);
-    }
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-
-    let child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            let _ = cancel_tx.send(());
-            let _ = hb_handle.await;
-            let _ = client.release_lease(&lease_id).await;
-            return Err(format!("Failed to spawn process: {}", e));
-        }
-    };
-
-    if let Some(pid) = child.id() {
-        let cgroups = nomos_sys::cgroup::CgroupController::new();
-        if let Err(e) = cgroups.attach_pid_with_mode(&lease.id, network_mode, pid) {
-            eprintln!("[nomos-mcp] Could not attach PID {} to cgroup (mode: {}): {}", pid, network_mode, e);
-        } else {
-            eprintln!("[nomos-mcp] Attached PID {} to cgroup slice {} (network: {})", pid, lease.id, network_mode);
-        }
-    }
-
-    // Wait with timeout
-    let timeout_dur = Duration::from_secs(timeout_secs);
-    let wait_res = tokio::time::timeout(timeout_dur, child.wait_with_output()).await;
-
-    let _ = cancel_tx.send(());
-    let _ = hb_handle.await;
-
-    // Release lease
-    let _ = client.release_lease(&lease_id).await;
-
-    let elapsed = start_time.elapsed();
-
-    match wait_res {
-        Ok(Ok(output)) => {
-            let exit_code = output.status.code().unwrap_or(-1);
-            let is_error = !output.status.success();
-
-            let stdout_str = String::from_utf8_lossy(&output.stdout);
-            let stderr_str = String::from_utf8_lossy(&output.stderr);
-
-            let max_bytes = 512 * 1024; // 512 KB
-            let truncated_stdout = if stdout_str.len() > max_bytes {
-                format!("{}\n[... stdout truncated after 512 KB ...]", &stdout_str[..max_bytes])
-            } else {
-                stdout_str.into_owned()
-            };
-
-            let truncated_stderr = if stderr_str.len() > max_bytes {
-                format!("{}\n[... stderr truncated after 512 KB ...]", &stderr_str[..max_bytes])
-            } else {
-                stderr_str.into_owned()
-            };
-
-            let report = format!(
-                "[Nomos Execution Report]\n\
-                 Command: {}\n\
-                 Status: {}\n\
-                 Exit Code: {}\n\
-                 Duration: {:.3}s\n\
-                 Lease ID: {}\n\
-                 Allocated: {:.1} vCPU | {} RAM | Network: {}\n\n\
-                 === STDOUT ===\n\
-                 {}\n\n\
-                 === STDERR ===\n\
-                 {}",
-                command_str,
-                if is_error { "FAILED" } else { "SUCCESS" },
-                exit_code,
-                elapsed.as_secs_f64(),
-                lease_id,
-                cpu,
-                mem_str,
-                network_mode,
-                if truncated_stdout.trim().is_empty() { "(empty)" } else { truncated_stdout.trim() },
-                if truncated_stderr.trim().is_empty() { "(empty)" } else { truncated_stderr.trim() }
-            );
-
-            Ok((report, is_error))
-        }
-        Ok(Err(e)) => {
-            Err(format!("Process execution error: {}", e))
-        }
-        Err(_) => {
-            // Timed out
-            Err(format!("Command timed out after {} seconds. Lease {} auto-reclaimed.", timeout_secs, lease_id))
-        }
-    }
+async fn handle_nomos_run(sock_path:&std::path::Path,arguments:Value)->Result<(String,bool),String> {
+    let command_str=arguments.get("command").and_then(Value::as_str).ok_or("Missing command")?;
+    let network=arguments.get("network").and_then(Value::as_str).unwrap_or("isolated");
+    if network!="host" {return Err("Network isolation is not implemented; explicitly select host networking".into());}
+    if arguments.get("scratch").is_some() || arguments.get("devices").and_then(Value::as_array).is_some_and(|a|!a.is_empty()) {return Err("Device and scratch enforcement is not implemented".into());}
+    let ttl=arguments.get("timeout_seconds").and_then(Value::as_u64).unwrap_or(120);
+    let mut command=Command::new(std::env::current_exe().map_err(|e|e.to_string())?);
+    command.arg("run").arg("--socket").arg(sock_path)
+        .args(["--network","host","--cpu",&arguments.get("cpu").and_then(Value::as_f64).unwrap_or(1.0).to_string(),
+            "--mem",arguments.get("memory").and_then(Value::as_str).unwrap_or("1GB"),"--ttl",&ttl.to_string(),
+            "--priority",&arguments.get("priority").and_then(Value::as_u64).unwrap_or(50).to_string(),"--","sh","-c",command_str]);
+    if let Some(dir)=arguments.get("working_dir").and_then(Value::as_str){command.current_dir(dir);}
+    command.stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    let start=Instant::now();
+    let output=tokio::time::timeout(Duration::from_secs(ttl.saturating_add(30)),command.output()).await
+        .map_err(|_|"Runner did not finish cleanup before the MCP deadline; do not assume resources were released".to_owned())?
+        .map_err(|e|e.to_string())?;
+    let report=json!({"exit_code":output.status.code(),"duration_seconds":start.elapsed().as_secs_f64(),
+        "stdout":String::from_utf8_lossy(&output.stdout),"stderr":String::from_utf8_lossy(&output.stderr),
+        "resource_usage":"Consult measured Nomos accounting; reservation sizes are not measurements"});
+    Ok((report.to_string(),!output.status.success()))
 }
 
 fn handle_nomos_probe() -> Result<(String, bool), String> {

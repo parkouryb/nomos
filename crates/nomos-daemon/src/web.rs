@@ -735,7 +735,7 @@ async fn events_handler(
 
 pub async fn start_web_server(port: u16, handle: ArbiterHandle) -> Result<(), anyhow::Error> {
     let app = create_web_router(handle);
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
+    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
     info!("Nomos Web Dashboard live at http://localhost:{}", port);
     axum::serve(listener, app).await?;
     Ok(())

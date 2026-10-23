@@ -10,6 +10,7 @@ pub enum ArbiterRequest {
     Heartbeat { lease_id: String },
     ReleaseLease { lease_id: String },
     QueryLease { lease_id: String },
+    FinishLease { lease_id: String, success: bool },
     GetStatus,
     GetAccounting {
         limit: usize,

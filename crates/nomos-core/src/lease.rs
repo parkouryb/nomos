@@ -182,7 +182,9 @@ impl Lease {
     }
 
     pub fn record_heartbeat(&mut self) {
-        self.last_heartbeat = Some(Utc::now());
+        let now = Utc::now();
+        self.last_heartbeat = Some(now);
+        self.expires_at = Some(now + chrono::Duration::seconds(self.request.ttl_seconds as i64));
     }
 
     pub fn mark_completed(&mut self) {

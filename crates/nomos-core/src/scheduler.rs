@@ -59,7 +59,6 @@ impl Scheduler {
     pub fn allocated_cpu(&self) -> f64 {
         self.active_leases
             .values()
-            .filter(|l| l.state.is_active())
             .map(|l| l.request.req_cpu)
             .sum()
     }
@@ -67,7 +66,6 @@ impl Scheduler {
     pub fn allocated_memory_bytes(&self) -> u64 {
         self.active_leases
             .values()
-            .filter(|l| l.state.is_active())
             .map(|l| l.request.req_memory_bytes)
             .sum()
     }
@@ -75,12 +73,14 @@ impl Scheduler {
     pub fn allocated_scratch_bytes(&self) -> u64 {
         self.active_leases
             .values()
-            .filter(|l| l.state.is_active())
             .map(|l| l.request.req_scratch_bytes)
             .sum()
     }
 
     pub fn request_lease(&mut self, mut lease: Lease) -> AdmissionResult {
+        if !lease.request.req_cpu.is_finite() || lease.request.req_cpu <= 0.0 || lease.request.req_memory_bytes < 4096 || lease.request.ttl_seconds == 0 {
+            return AdmissionResult::Rejected { reason: "Invalid CPU, RAM or TTL request".into() };
+        }
         // 1. Check DAG dependencies
         if !self.dag_engine.register_task(&lease.request.worker_id, &lease.request.depends_on) {
             let pos = self.wait_queue.len() + 1;
@@ -200,6 +200,7 @@ impl Scheduler {
 
     pub fn record_heartbeat(&mut self, lease_id: &str) -> bool {
         if let Some(l) = self.active_leases.get_mut(lease_id) {
+            if !l.state.is_active() { return false; }
             l.record_heartbeat();
             true
         } else {
@@ -208,18 +209,27 @@ impl Scheduler {
     }
 
     pub fn release_lease(&mut self, lease_id: &str) -> (Option<Lease>, Vec<Lease>) {
+        self.finish_lease(lease_id, true)
+    }
+
+    pub fn set_enforced_path(&mut self, id: &str, path: String) {
+        if let Some(lease) = self.active_leases.get_mut(id) { lease.cgroup_path = Some(path); }
+    }
+
+    pub fn finish_lease(&mut self, lease_id: &str, success: bool) -> (Option<Lease>, Vec<Lease>) {
         let mut newly_granted = Vec::new();
         let mut released_opt = None;
 
         if let Some(mut lease) = self.active_leases.remove(lease_id) {
             lease.mark_completed();
+            if !success { lease.state = LeaseState::Revoked; }
             released_opt = Some(lease.clone());
 
             // Unbind devices
             self.active_devices.retain(|_, id| id != lease_id);
 
             // Mark completed in DAG and get newly unlocked workers
-            let _unlocked = self.dag_engine.mark_completed(&lease.request.worker_id);
+            if success { self.dag_engine.mark_completed(&lease.request.worker_id); }
 
             // Try to admit queued tasks (Backfilling & Fair-share scheduling)
             let mut remaining_queue = VecDeque::new();
@@ -274,6 +284,7 @@ impl Scheduler {
         } else if let Some(pos) = self.wait_queue.iter().position(|l| l.id == lease_id) {
             if let Some(mut lease) = self.wait_queue.remove(pos) {
                 lease.mark_completed();
+            if !success { lease.state = LeaseState::Revoked; }
                 released_opt = Some(lease);
             }
         }
@@ -284,6 +295,7 @@ impl Scheduler {
     pub fn check_heartbeats(&mut self, now: DateTime<Utc>, timeout_seconds: u64) -> Vec<String> {
         let mut hung = Vec::new();
         for (id, l) in &mut self.active_leases {
+            if l.state == LeaseState::Hung || l.state == LeaseState::Expired { hung.push(id.clone()); continue; }
             if l.state == LeaseState::Running || l.state == LeaseState::Granted {
                 if let Some(last) = l.last_heartbeat {
                     if (now - last).num_seconds() > timeout_seconds as i64 {
@@ -338,6 +350,43 @@ impl Scheduler {
 mod tests {
     use super::*;
     use crate::lease::{LeaseRequest, Priority};
+
+    fn enforced_test_scheduler() -> Scheduler {
+        Scheduler::new(NomosPool { total_cores: 1., total_memory_bytes: 1024*1024,
+            host_reserve_memory_bytes: 0, total_storage_bytes: 0, max_active_leases: 10 })
+    }
+    fn request(worker: &str) -> Lease {
+        Lease::new(LeaseRequest { worker_id: worker.into(), tenant: "test".into(),
+            req_cpu: 1., req_memory_bytes: 4096, req_scratch_bytes: 0, devices: vec![],
+            network_mode: crate::lease::NetworkMode::Host, network_bandwidth_mbps: None,
+            estimated_seconds: None, deadline: None, depends_on: vec![],
+            priority: Priority::Normal, ttl_seconds: 1 })
+    }
+    #[test]
+    fn expired_work_reserves_capacity_until_cleanup_finishes() {
+        let mut scheduler = enforced_test_scheduler();
+        let first = request("first");
+        assert!(matches!(scheduler.request_lease(first.clone()), AdmissionResult::Granted(_)));
+        assert_eq!(scheduler.check_expirations(Utc::now() + chrono::Duration::seconds(2)), vec![first.id.clone()]);
+        assert_eq!(scheduler.allocated_cpu(), 1.);
+        assert_eq!(scheduler.allocated_memory_bytes(), 4096);
+        assert!(matches!(scheduler.request_lease(request("second")), AdmissionResult::Queued {..}));
+        let (_, granted) = scheduler.finish_lease(&first.id, false);
+        assert_eq!(granted.len(), 1);
+        assert_eq!(granted[0].request.worker_id, "second");
+    }
+    #[test]
+    fn failure_does_not_unlock_dependent_work() {
+        let mut scheduler = enforced_test_scheduler();
+        let first = request("first");
+        scheduler.request_lease(first.clone());
+        let mut dependent = request("dependent");
+        dependent.request.depends_on = vec!["first".into()];
+        assert!(matches!(scheduler.request_lease(dependent), AdmissionResult::Queued {..}));
+        let (_, granted) = scheduler.finish_lease(&first.id, false);
+        assert!(granted.is_empty());
+        assert_eq!(scheduler.allocated_cpu(), 0.);
+    }
 
     #[test]
     fn test_admission_and_backfilling() {

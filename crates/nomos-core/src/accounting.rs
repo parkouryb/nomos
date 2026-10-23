@@ -6,6 +6,10 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditRecord {
+    #[serde(default)]
+    pub cpu_memory_measured: bool,
+    #[serde(default)]
+    pub gpu_network_measured: bool,
     pub lease_id: String,
     pub worker_id: String,
     pub tenant: String,
@@ -143,10 +147,10 @@ impl AuditLedger {
                 }
             }
             sum.total_records += 1;
-            sum.total_cpu_hours += r.cpu_core_seconds / 3600.0;
-            sum.total_gpu_hours += r.gpu_seconds / 3600.0;
+            if r.cpu_memory_measured { sum.total_cpu_hours += r.cpu_core_seconds / 3600.0; }
+            if r.gpu_network_measured { sum.total_gpu_hours += r.gpu_seconds / 3600.0; }
             sum.total_duration_hours += r.duration_seconds / 3600.0;
-            if r.peak_memory_bytes > sum.peak_memory_seen_bytes {
+            if r.cpu_memory_measured && r.peak_memory_bytes > sum.peak_memory_seen_bytes {
                 sum.peak_memory_seen_bytes = r.peak_memory_bytes;
             }
         }
@@ -177,6 +181,8 @@ mod tests {
         let now = Utc::now();
 
         ledger.record(AuditRecord {
+            cpu_memory_measured: true,
+            gpu_network_measured: false,
             lease_id: "ls-1".into(),
             worker_id: "worker-1".into(),
             tenant: "test".into(),
@@ -205,6 +211,8 @@ mod tests {
 
         // Old record: 45 days ago
         ledger.in_memory.push(AuditRecord {
+            cpu_memory_measured: true,
+            gpu_network_measured: false,
             lease_id: "ls-old".into(),
             worker_id: "worker-old".into(),
             tenant: "test".into(),
@@ -220,6 +228,8 @@ mod tests {
 
         // Recent record: 5 days ago
         ledger.in_memory.push(AuditRecord {
+            cpu_memory_measured: true,
+            gpu_network_measured: false,
             lease_id: "ls-recent".into(),
             worker_id: "worker-recent".into(),
             tenant: "test".into(),

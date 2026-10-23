@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # NOMOS (Νόμος) — One-Command Universal Installer & Updater
-# Supports: macOS (Apple Silicon / Intel) & Linux (Ubuntu / Debian / Systemd)
+# Enforced runtime: Linux cgroup v2 with systemd user delegation
 # Automatically configures Antigravity (AGY) & Claude Desktop MCP & Hooks
 # ==============================================================================
 set -euo pipefail
@@ -37,19 +37,15 @@ if ! command -v python3 >/dev/null 2>&1; then
     echo "[WARNING] Python 3 not found. Python SDK installation will be skipped."
 fi
 
-# 2. Stop running daemon service if active to avoid 'text file busy' errors
-echo "[1/8] Stopping active Nomos daemon services (if running)..."
-if [ "${OS}" = "Linux" ]; then
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl --user stop nomos.service 2>/dev/null || true
-    fi
-elif [ "${OS}" = "Darwin" ]; then
-    if [ -f "${HOME}/Library/LaunchAgents/com.nomos.arbiter.plist" ]; then
-        launchctl unload "${HOME}/Library/LaunchAgents/com.nomos.arbiter.plist" 2>/dev/null || true
-    fi
+# Refuse unsupported hosts before changing any installed services.
+if [ "${OS}" != "Linux" ] || ! command -v systemctl >/dev/null 2>&1; then
+    echo "[ERROR] Enforced execution requires Linux cgroup v2 and user systemd."
+    exit 1
 fi
-pkill -f "nomos daemon" 2>/dev/null || true
-sleep 0.5
+if [ "$(stat -fc %T /sys/fs/cgroup)" != "cgroup2fs" ]; then
+    echo "[ERROR] cgroup v2 is required."
+    exit 1
+fi
 
 # 3. Compile or verify release binary
 echo "[2/8] Compiling Nomos release binary with native optimizations..."
@@ -116,13 +112,11 @@ else
     echo "  - Preserving existing configuration: ${CONFIG_DIR}/nomos.toml"
 fi
 
-# 6. Install Python SDK
+# Install the optional SDK in its own environment, never in managed system Python.
 if command -v python3 >/dev/null 2>&1; then
-    echo "[5/8] Installing / Updating Nomos Python Client SDK..."
-    python3 -m pip install -e "${SCRIPT_DIR}/sdk/python" --break-system-packages 2>/dev/null || \
-    python3 -m pip install --user -e "${SCRIPT_DIR}/sdk/python" 2>/dev/null || \
-    python3 -m pip install -e "${SCRIPT_DIR}/sdk/python" 2>/dev/null || \
-    echo "  [WARNING] Python pip install failed, SDK available directly at ${SCRIPT_DIR}/sdk/python"
+    echo "[5/8] Installing Nomos SDK in ${CONFIG_DIR}/sdk-venv..."
+    python3 -m venv --system-site-packages "${CONFIG_DIR}/sdk-venv"
+    "${CONFIG_DIR}/sdk-venv/bin/python" -m pip install --no-deps --no-build-isolation "${SCRIPT_DIR}/sdk/python"
 fi
 
 # 7. Configure background daemon service
@@ -133,14 +127,15 @@ if [ "${OS}" = "Linux" ]; then
     cat << EOF > "${SYSTEMD_USER_DIR}/nomos.service"
 [Unit]
 Description=Nomos Single-Host Delicate Resource Arbiter
-After=default.target
 
 [Service]
 Type=simple
 WorkingDirectory=%h
 ExecStart=${INSTALL_DIR}/${BIN_NAME} daemon --config ${CONFIG_DIR}/nomos.toml --port 9100 --socket ${CONFIG_DIR}/arbiter.sock
-Restart=always
+Restart=on-failure
 RestartSec=3
+Delegate=yes
+KillMode=control-group
 
 [Install]
 WantedBy=default.target
@@ -148,47 +143,21 @@ EOF
 
     if command -v systemctl >/dev/null 2>&1; then
         systemctl --user daemon-reload
-        systemctl --user enable --now nomos.service
+        systemctl --user enable nomos.service
+        systemctl --user restart nomos.service
+        ready=0
+        for attempt in {1..30}; do
+            if "${INSTALL_DIR}/${BIN_NAME}" status >/dev/null 2>&1; then ready=1; break; fi
+            sleep 1
+        done
+        if [ "$ready" != 1 ]; then
+            echo "[ERROR] Nomos did not become ready; inspect journalctl --user -u nomos.service"
+            exit 1
+        fi
         echo "  - Systemd user service active: nomos.service"
     fi
 
-elif [ "${OS}" = "Darwin" ]; then
-    LAUNCHD_DIR="${HOME}/Library/LaunchAgents"
-    mkdir -p "${LAUNCHD_DIR}"
-    cat << EOF > "${LAUNCHD_DIR}/com.nomos.arbiter.plist"
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.nomos.arbiter</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>${INSTALL_DIR}/${BIN_NAME}</string>
-        <string>daemon</string>
-        <string>--config</string>
-        <string>${CONFIG_DIR}/nomos.toml</string>
-        <string>--port</string>
-        <string>9100</string>
-        <string>--socket</string>
-        <string>${CONFIG_DIR}/arbiter.sock</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>${CONFIG_DIR}/daemon.log</string>
-    <key>StandardErrorPath</key>
-    <string>${CONFIG_DIR}/daemon.err</string>
-    <key>WorkingDirectory</key>
-    <string>${HOME}</string>
-</dict>
-</plist>
-EOF
-    launchctl unload "${LAUNCHD_DIR}/com.nomos.arbiter.plist" 2>/dev/null || true
-    launchctl load -w "${LAUNCHD_DIR}/com.nomos.arbiter.plist"
-    echo "  - macOS LaunchAgent active: com.nomos.arbiter"
+
 fi
 
 # 8. Configure AI Assistant Integrations (Antigravity & Claude Desktop)

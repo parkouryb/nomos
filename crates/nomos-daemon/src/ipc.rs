@@ -22,14 +22,19 @@ impl IpcServer {
     pub async fn run(self) -> Result<(), anyhow::Error> {
         // Remove stale socket if exists
         if self.socket_path.exists() {
-            let _ = std::fs::remove_file(&self.socket_path);
+            if tokio::net::UnixStream::connect(&self.socket_path).await.is_ok() {
+                anyhow::bail!("Another Nomos daemon is already listening at {:?}", self.socket_path);
+            }
+            std::fs::remove_file(&self.socket_path)?;
         }
 
         if let Some(parent) = self.socket_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)?;
         }
 
         let listener = UnixListener::bind(&self.socket_path)?;
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&self.socket_path, std::fs::Permissions::from_mode(0o600))?;
         info!("Nomos IPC Unix socket listening at {:?}", self.socket_path);
 
         loop {

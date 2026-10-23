@@ -12,6 +12,12 @@ pub struct NomosClient {
 }
 
 impl NomosClient {
+    fn verified(lease: Lease) -> anyhow::Result<Lease> {
+        let path = lease.cgroup_path.as_ref().ok_or_else(||anyhow::anyhow!("Arbiter returned an unenforced reservation"))?;
+        nomos_sys::cgroup::require_cgroup2(std::path::Path::new(path))?;
+        Ok(lease)
+    }
+
     pub async fn connect<P: AsRef<Path>>(socket_path: P) -> Result<Self, anyhow::Error> {
         let stream = UnixStream::connect(socket_path).await?;
         let framed = Framed::new(stream, LinesCodec::new());
@@ -42,8 +48,9 @@ impl NomosClient {
     #[allow(dead_code)]
     pub async fn acquire_lease_nowait(&mut self, req: LeaseRequest) -> Result<Lease, anyhow::Error> {
         match self.call(ArbiterRequest::AcquireLease(req)).await? {
-            ArbiterResponse::LeaseGranted(l) => Ok(l),
-            ArbiterResponse::LeaseQueued { lease: _, position, reason } => {
+            ArbiterResponse::LeaseGranted(l) => Self::verified(l),
+            ArbiterResponse::LeaseQueued { lease, position, reason } => {
+                self.release_lease(&lease.id).await?;
                 Err(anyhow::anyhow!("Lease queued at position {}: {}", position, reason))
             }
             ArbiterResponse::Error(e) => Err(anyhow::anyhow!("Lease request rejected: {}", e)),
@@ -57,20 +64,21 @@ impl NomosClient {
         timeout: std::time::Duration,
     ) -> Result<Lease, anyhow::Error> {
         match self.call(ArbiterRequest::AcquireLease(req)).await? {
-            ArbiterResponse::LeaseGranted(l) => Ok(l),
+            ArbiterResponse::LeaseGranted(l) => Self::verified(l),
             ArbiterResponse::LeaseQueued { lease, position, reason } => {
                 let lease_id = lease.id;
                 tracing::info!("Lease {} queued at position #{} ({}). Waiting for resources/DAG...", lease_id, position, reason);
                 let start = std::time::Instant::now();
                 loop {
                     if start.elapsed() > timeout {
+                        self.release_lease(&lease_id).await?;
                         return Err(anyhow::anyhow!("Timed out after {:?} waiting for lease {}", timeout, lease_id));
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                     match self.query_lease(&lease_id).await? {
                         ArbiterResponse::LeaseGranted(l) => {
                             tracing::info!("Lease {} is now GRANTED!", lease_id);
-                            return Ok(l);
+                            return Self::verified(l);
                         }
                         ArbiterResponse::LeaseQueued { .. } => {
                             // Still waiting

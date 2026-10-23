@@ -43,7 +43,7 @@ impl ArbiterActor {
         pool: NomosPool,
         audit_path: Option<String>,
         retention_days: u32,
-    ) -> (ArbiterHandle, tokio::task::JoinHandle<()>) {
+    ) -> anyhow::Result<(ArbiterHandle, tokio::task::JoinHandle<()>)> {
         let (tx, rx) = mpsc::channel(256);
         let scheduler = Scheduler::new(pool);
         let initial_snapshot = scheduler.snapshot();
@@ -51,7 +51,8 @@ impl ArbiterActor {
 
         let cgroups = CgroupController::new();
         // Clean up orphan cgroups from prior runs at boot
-        let orphans_cleaned = cgroups.reconcile_and_clean_orphans();
+        cgroups.initialize()?;
+        let orphans_cleaned = cgroups.reconcile_and_clean_orphans()?;
         if orphans_cleaned > 0 {
             info!("Boot reconciliation: Cleaned {} orphan cgroup slices", orphans_cleaned);
         }
@@ -71,13 +72,13 @@ impl ArbiterActor {
             actor.run(snapshot_ref).await;
         });
 
-        (
+        Ok((
             ArbiterHandle {
                 tx,
                 latest_snapshot,
             },
             handle,
-        )
+        ))
     }
 
     async fn run(mut self, snapshot_ref: Arc<RwLock<nomos_core::scheduler::SchedulerSnapshot>>) {
@@ -112,23 +113,21 @@ impl ArbiterActor {
     async fn handle_request(&mut self, req: ArbiterRequest) -> ArbiterResponse {
         match req {
             ArbiterRequest::AcquireLease(lease_req) => {
-                let lease = Lease::new(lease_req);
-                let adm = self.scheduler.request_lease(lease);
-
-                if let nomos_core::scheduler::AdmissionResult::Granted(ref l) = adm {
-                    // Create cgroup slice if available
-                    if let Ok(slice) = self.cgroups.create_lease_slice(
-                        &l.id,
-                        l.request.req_cpu,
-                        l.request.req_memory_bytes,
-                        None,
-                        l.request.network_mode,
-                    ) {
-                        info!("Created cgroup slice at {:?}", slice);
-                    }
+                if lease_req.network_mode != nomos_core::lease::NetworkMode::Host || !lease_req.devices.is_empty() || lease_req.req_scratch_bytes != 0 || lease_req.network_bandwidth_mbps.is_some() {
+                    return ArbiterResponse::Error("Requested network/device/scratch enforcement is not implemented; use explicit host network and CPU/RAM only".into());
                 }
-
-                ArbiterResponse::from_admission(adm)
+                let adm = self.scheduler.request_lease(Lease::new(lease_req));
+                match adm {
+                    nomos_core::scheduler::AdmissionResult::Granted(l) => {
+                        let id = l.id.clone();
+                        self.enforce_grants(vec![l]);
+                        match self.scheduler.get_lease(&id) {
+                            Some((lease, None)) if lease.cgroup_path.is_some() => ArbiterResponse::LeaseGranted(lease),
+                            _ => ArbiterResponse::Error("Kernel resource enforcement failed; lease was not granted".into()),
+                        }
+                    }
+                    other => ArbiterResponse::from_admission(other),
+                }
             }
             ArbiterRequest::Heartbeat { lease_id } => {
                 let success = self.scheduler.record_heartbeat(&lease_id);
@@ -136,7 +135,8 @@ impl ArbiterActor {
             }
             ArbiterRequest::QueryLease { lease_id } => {
                 match self.scheduler.get_lease(&lease_id) {
-                    Some((l, None)) => ArbiterResponse::LeaseGranted(l),
+                    Some((l, None)) if l.state.is_active() && l.cgroup_path.is_some() => ArbiterResponse::LeaseGranted(l),
+                    Some((_, None)) => ArbiterResponse::Error("Lease is terminating or enforcement was not verified".into()),
                     Some((l, Some(pos))) => ArbiterResponse::LeaseQueued {
                         lease: l,
                         position: pos,
@@ -145,46 +145,8 @@ impl ArbiterActor {
                     None => ArbiterResponse::Error(format!("Lease {} not found", lease_id)),
                 }
             }
-            ArbiterRequest::ReleaseLease { lease_id } => {
-                let (released_opt, newly_granted) = self.scheduler.release_lease(&lease_id);
-                let _ = self.cgroups.destroy_lease_slice(&lease_id);
-
-                // Record accounting with true worker name and measured runtime
-                let now = Utc::now();
-                if let Some(l) = released_opt {
-                    let started = l.granted_at.unwrap_or(l.created_at);
-                    let dur = l.actual_runtime_seconds;
-                    let cpu_secs = dur * l.request.req_cpu;
-                    let rec = AuditRecord {
-                        lease_id: l.id.clone(),
-                        worker_id: l.request.worker_id.clone(),
-                        tenant: l.request.tenant.clone(),
-                        started_at: started,
-                        finished_at: now,
-                        duration_seconds: dur,
-                        cpu_core_seconds: cpu_secs,
-                        peak_memory_bytes: l.request.req_memory_bytes,
-                        gpu_seconds: if !l.request.devices.is_empty() { dur } else { 0.0 },
-                        net_egress_bytes: 0,
-                        final_state: format!("{:?}", l.state),
-                    };
-                    self.ledger.record(rec);
-                }
-
-                for granted in &newly_granted {
-                    let _ = self.cgroups.create_lease_slice(
-                        &granted.id,
-                        granted.request.req_cpu,
-                        granted.request.req_memory_bytes,
-                        None,
-                        granted.request.network_mode,
-                    );
-                }
-
-                ArbiterResponse::ReleasedAck {
-                    newly_granted_count: newly_granted.len(),
-                }
-            }
+            ArbiterRequest::ReleaseLease { lease_id } => self.finish(&lease_id, false),
+            ArbiterRequest::FinishLease { lease_id, success } => self.finish(&lease_id, success),
             ArbiterRequest::GetStatus => {
                 ArbiterResponse::Status(self.scheduler.snapshot())
             }
@@ -198,6 +160,9 @@ impl ArbiterActor {
                 let host = probe_host();
                 match NomosPool::from_config(&cfg, &host.resources) {
                     Ok(new_pool) => {
+                        if new_pool.total_cores < self.scheduler.allocated_cpu() || new_pool.total_memory_bytes < self.scheduler.allocated_memory_bytes() {
+                            return ArbiterResponse::Error("Budget is below active reservations; stop workloads first".into());
+                        }
                         info!("Hot-reloading Nomos pool: {:?}", new_pool);
                         self.scheduler.set_pool(new_pool);
                         ArbiterResponse::BudgetUpdated
@@ -211,41 +176,52 @@ impl ArbiterActor {
         }
     }
 
-    async fn on_tick(&mut self) {
-        let now = Utc::now();
-
-        // 1. Check dead-man's switch heartbeats (15s timeout)
-        let hung = self.scheduler.check_heartbeats(now, 15);
-        for id in hung {
-            warn!("Dead-man's switch triggered for hung lease {}, auto-reclaiming", id);
-            let (_rel, newly_granted) = self.scheduler.release_lease(&id);
-            let _ = self.cgroups.destroy_lease_slice(&id);
-            for g in newly_granted {
-                let _ = self.cgroups.create_lease_slice(
-                    &g.id,
-                    g.request.req_cpu,
-                    g.request.req_memory_bytes,
-                    None,
-                    g.request.network_mode,
-                );
+    fn enforce_grants(&mut self, grants: Vec<Lease>) {
+        let mut pending = std::collections::VecDeque::from(grants);
+        while let Some(l) = pending.pop_front() {
+            match self.cgroups.create_lease_slice(&l.id, l.request.req_cpu, l.request.req_memory_bytes, None, l.request.network_mode) {
+                Ok(path) => self.scheduler.set_enforced_path(&l.id, path.to_string_lossy().into_owned()),
+                Err(err) => {
+                    error!(lease_id=%l.id, "Kernel enforcement failed: {}", err);
+                    // No worker has received this lease. Do not unlock dependent jobs.
+                    let (_, next) = self.scheduler.finish_lease(&l.id, false);
+                    pending.extend(next);
+                }
             }
         }
+    }
 
-        // 2. Check TTL lease expirations
-        let expired = self.scheduler.check_expirations(now);
+    fn finish(&mut self, id: &str, success: bool) -> ArbiterResponse {
+        let metrics = self.cgroups.measurements(id).ok();
+        // Never reclaim scheduling capacity while a process can still be alive.
+        if let Err(err) = self.cgroups.destroy_lease_slice(id) {
+            return ArbiterResponse::Error(format!("Cannot terminate lease {}; capacity remains reserved: {}", id, err));
+        }
+        let (released, next) = self.scheduler.finish_lease(id, success);
+        if let Some(l) = released {
+            let (cpu, memory) = metrics.unwrap_or((0.0, 0));
+            self.ledger.record(AuditRecord {
+                cpu_memory_measured: metrics.is_some(), gpu_network_measured: false,
+                lease_id: l.id, worker_id: l.request.worker_id, tenant: l.request.tenant,
+                started_at: l.granted_at.unwrap_or(l.created_at), finished_at: Utc::now(),
+                duration_seconds: l.actual_runtime_seconds, cpu_core_seconds: cpu,
+                peak_memory_bytes: memory, gpu_seconds: 0.0, net_egress_bytes: 0,
+                final_state: format!("{:?}", l.state),
+            });
+        }
+        let ids = next.iter().map(|l| l.id.clone()).collect::<Vec<_>>();
+        self.enforce_grants(next);
+        let count = ids.iter().filter(|id| self.scheduler.get_lease(id).is_some()).count();
+        ArbiterResponse::ReleasedAck { newly_granted_count: count }
+    }
+
+    async fn on_tick(&mut self) {
+        let now = Utc::now();
+        let mut expired = self.scheduler.check_heartbeats(now, 15);
+        expired.extend(self.scheduler.check_expirations(now));
+        expired.sort(); expired.dedup();
         for id in expired {
-            info!("Lease {} expired by TTL, auto-releasing", id);
-            let (_rel, newly_granted) = self.scheduler.release_lease(&id);
-            let _ = self.cgroups.destroy_lease_slice(&id);
-            for g in newly_granted {
-                let _ = self.cgroups.create_lease_slice(
-                    &g.id,
-                    g.request.req_cpu,
-                    g.request.req_memory_bytes,
-                    None,
-                    g.request.network_mode,
-                );
-            }
+            if let ArbiterResponse::Error(err) = self.finish(&id, false) { warn!("{}", err); }
         }
     }
 }
